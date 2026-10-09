@@ -1,0 +1,10 @@
+Xây dựng một Tools sử dụng code bằng python tại thư mục này xử lý Luồng công việc như sau: 
+Bước 1 trình duyệt vào link https://flow.google.com/u/2/project/c53f1d47-14d7-47f1-8654-8f0dd599ae34
+bước 2 bấm vào <span _ngcontent-ng-c2086299465="" matlistitemtitle="" class="mat-mdc-list-item-title mdc-list-item__primary-text applet-title">Tạo ảnh từ câu lệnh</span>
+bước 3 bấm vào <p class="text-xs font-bold uppercase tracking-wider">Tải ảnh sản phẩm</p>
+màn hình sẽ hiện một popup và bấm tiếp vào <span _ngcontent-ng-c953764038="" class="upload-text">Tải nội dung nghe nhìn lên</span>
+sau đó tải nên ảnh ở thư mục job/img rồi đơi nó load ảnh xong sau đó bấm chọn ảnh vừa tải nên dựa vào tên ảnh như ví dụ sau <span _ngcontent-ng-c703487345="" class="asset-title">anh-ghep-20261006-153010.png</span>
+sau đó bấm <span class="mdc-button__label"> Thêm nội dung nghe nhìn </span>
+sau đó sử dụng câu lện trong prompt.txt điền vào ô 02. Bối cảnh mong muốn sau đó bấm nút tạo ảnh đợi ảnh tạo xong bấm vào 
+tab <span _ngcontent-ng-c2086299465="" matlistitemtitle="" class="mat-mdc-list-item-title mdc-list-item__primary-text">Hình ảnh</span> chọn ảnh đầu tiên bấm chuột phải chọn tải xuông chọn độ phân giải 2k
+
