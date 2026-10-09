@@ -43,7 +43,7 @@ for stream in (sys.stdout, sys.stderr):
 # CẤU HÌNH
 # ======================================
 API_BASE_URL = os.environ.get("AI90_API_BASE_URL", "https://admin.a51.vn/api/v1").rstrip("/")
-WORKER_TOKEN = os.environ.get("AI90_WORKER_TOKEN", "EKeRXxq346xk6FpgFIIblk7zpqLkZmAJRgfgMOnWm5sm2h3HMmZUJoHlCSgMTH7h")
+WORKER_TOKEN = os.environ.get("AI90_WORKER_TOKEN", "VbCY6Joa2Yd8ru8119QIfLJFxLhdzEjiwUMx9gbD3lmuVXIwgHGdgOQWXkiocpRM")
 POLL_INTERVAL = 5        # Giây nghỉ khi chưa có job
 IDLE_LOG_INTERVAL = 60   # Khi chưa có job: cứ mỗi bấy nhiêu giây in 1 dòng "vẫn đang chờ"
 API_ERROR_DELAY = 15     # Giây nghỉ khi không gọi được API
