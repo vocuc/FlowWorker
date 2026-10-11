@@ -2,13 +2,18 @@
 Worker tạo ảnh cho AI90.
 
 Vòng lặp:
-  1. GET  {API_BASE_URL}/jobs        -> nhận 1 job (1 ảnh): prompt (đã ghi sẵn tỉ lệ khung hình), link ảnh đầu vào.
-  2. Tải ảnh đầu vào về job/img, chạy Google Flow bằng Selenium, tải ảnh 2K về job/output.
+  1. GET  {API_BASE_URL}/jobs        -> nhận 1 job, trường "request" là JSON gửi cho tool Flow
+                                        (productImage, outfitImage, prompt, aspectRatio, modelDisplayName).
+  2. Mở tool trên Google Flow, dán JSON request vào ô nhập, bấm 'BẮT ĐẦU XỬ LÝ',
+     chờ tạo xong rồi tải ảnh 2K về job/output.
   3. POST {API_BASE_URL}/jobs/{id}   -> gửi ảnh kết quả (status=completed) hoặc báo lỗi (status=failed).
 
+Chế độ giả lập (AI90_USE_MOCK=1): không gọi API, chạy 1 lần với MOCK_JOB, giữ ảnh trong job/output.
+
 Cấu hình qua biến môi trường:
-  AI90_API_BASE_URL   mặc định http://a90.local/api/v1
-  AI90_WORKER_TOKEN   token tạo bằng: php artisan workers:create {name}   (bắt buộc)
+  AI90_USE_MOCK       mặc định 0 (gọi API thật). Đặt 1 để dùng job giả lập.
+  AI90_API_BASE_URL   mặc định https://admin.a51.vn/api/v1
+  AI90_WORKER_TOKEN   token tạo bằng: php artisan workers:create {name}   (bắt buộc khi gọi API thật)
 
 Chạy: python ImageGenerate.py   (Ctrl+C để dừng)
 """
@@ -24,6 +29,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 
+import json
 import mimetypes
 import pyperclip
 import requests
@@ -31,7 +37,6 @@ import sys
 import time
 import random
 import os
-import uuid
 from datetime import datetime
 
 # Console Windows (cp1252) không in được tiếng Việt -> ép stdout/stderr sang UTF-8
@@ -43,29 +48,45 @@ for stream in (sys.stdout, sys.stderr):
 # CẤU HÌNH
 # ======================================
 API_BASE_URL = os.environ.get("AI90_API_BASE_URL", "https://admin.a51.vn/api/v1").rstrip("/")
-WORKER_TOKEN = os.environ.get("AI90_WORKER_TOKEN", "VbCY6Joa2Yd8ru8119QIfLJFxLhdzEjiwUMx9gbD3lmuVXIwgHGdgOQWXkiocpRM")
+WORKER_TOKEN = os.environ.get("AI90_WORKER_TOKEN", "cA18Du4HphfWpcCUNbWrnkHbrTyucvcMybCyAAXtMiSAdHUoFbNhG79OUhYOBMkD")
 POLL_INTERVAL = 5        # Giây nghỉ khi chưa có job
 IDLE_LOG_INTERVAL = 60   # Khi chưa có job: cứ mỗi bấy nhiêu giây in 1 dòng "vẫn đang chờ"
 API_ERROR_DELAY = 15     # Giây nghỉ khi không gọi được API
 HTTP_TIMEOUT = 120       # Timeout mỗi request tới API / tải ảnh đầu vào
 
-FLOW_URL = "https://flow.google.com/u/2/project/c53f1d47-14d7-47f1-8654-8f0dd599ae34"
+USE_MOCK = os.environ.get("AI90_USE_MOCK", "0") == "1"
+
+# Dữ liệu giả lập thay cho "data" của GET /jobs (dùng khi AI90_USE_MOCK=1).
+# Server trả {"data": {"id": <mã job>, "request": {...}}}; trong request mỗi ảnh đầu vào là một khoá
+# camelCase theo trường của creative (productImage, outfitImage, ...), kèm prompt, aspectRatio, modelDisplayName.
+MOCK_JOB = {
+    "id": 0,
+    "request": {
+        "productImage": "https://topmcn.s3.ap-southeast-1.amazonaws.com/creatives/17/376bd6ea-d47a-435d-8635-3925cc58f718.png",
+        "outfitImage": "https://topmcn.s3.ap-southeast-1.amazonaws.com/creatives/18/0a38d326-0fe9-440d-93dd-6ebc4f997efb.jpg",
+        "prompt": "Tạo một người mẫu mặc outfitImage và đi đôi giày của tôi ở productImage",
+        "aspectRatio": "16:9",
+        "modelDisplayName": "🍌 Nano Banana Pro",
+    },
+}
+
+FLOW_URL = os.environ.get(
+    "AI90_FLOW_URL",
+    "https://flow.google.com/u/0/project/c53f1d47-14d7-47f1-8654-8f0dd599ae34/tool/5267a6b1-43f5-44bd-9795-52b22d0ab4fa",
+)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-IMG_DIR = os.path.join(BASE_DIR, "job", "img")        # Ảnh đầu vào tải từ server
 OUTPUT_DIR = os.path.join(BASE_DIR, "job", "output")  # Nơi lưu ảnh 2K tải xuống
-UPLOAD_TIMEOUT = 180    # Thời gian tối đa (giây) chờ ảnh tải lên xong
 LOGIN_TIMEOUT = 600     # Thời gian tối đa (giây) chờ đăng nhập Google lần đầu
 GENERATE_TIMEOUT = 600  # Thời gian tối đa (giây) chờ tạo ảnh xong
 DOWNLOAD_TIMEOUT = 300  # Thời gian tối đa (giây) chờ tải ảnh 2K về máy
 
-os.makedirs(IMG_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 chrome_options = Options()
 chrome_options.add_argument("--start-maximized")
 
 # Tạo Profile RIÊNG cho Selenium, KHÔNG dùng Default
-# (Profile này cần đăng nhập sẵn tài khoản Google /u/2)
+# (Profile này cần đăng nhập sẵn tài khoản Google /u/0)
 chrome_options.add_argument(r"user-data-dir=C:\selenium-profile")
 chrome_options.add_argument("profile-directory=Profile1")
 
@@ -111,157 +132,63 @@ def js_click(driver, element):
     driver.execute_script("arguments[0].click();", element)
 
 
-def click_by_xpath(driver, wait, xpath, label, retries=5):
-    # Trang Angular hay render lại -> tìm lại phần tử ngay trước khi click, thử lại nếu bị stale
-    wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
-    human_delay()
-    for attempt in range(retries):
-        try:
-            element = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-            driver.execute_script("arguments[0].click();", element)
-            log(f"ĐÃ CLICK: {label}")
-            return
-        except StaleElementReferenceException:
-            log(f"Phần tử bị render lại, thử lại ({attempt + 1}/{retries})...")
-            time.sleep(1)
-    raise RuntimeError(f"Không click được {label}")
+REQUEST_TEXTAREA_XPATH = "//textarea[contains(@placeholder, 'Mô tả bức ảnh bạn muốn')]"
+START_BUTTON_XPATH = "//button[contains(normalize-space(), 'BẮT ĐẦU XỬ LÝ')]"
 
 
-# Chặn hộp thoại chọn file của hệ điều hành (Selenium không điều khiển được),
-# giữ lại thẻ <input type=file> để gửi đường dẫn ảnh trực tiếp vào đó.
-INTERCEPT_FILE_DIALOG_JS = """
-if (!window.__fileDialogPatched) {
-    window.__fileDialogPatched = true;
-    const origClick = HTMLInputElement.prototype.click;
-    HTMLInputElement.prototype.click = function () {
-        if (this.type === 'file') {
-            if (!this.isConnected) {
-                this.style.display = 'none';
-                document.body.appendChild(this);
-            }
-            window.__lastFileInput = this;
-            return;
-        }
-        return origClick.apply(this, arguments);
-    };
-}
-window.__lastFileInput = null;
-"""
+def fill_request(driver, request_text):
+    """Click vào ô nhập JSON của tool (trong iframe) rồi dán nội dung request vào."""
+    switch_to_frame_with(driver, REQUEST_TEXTAREA_XPATH)
 
-
-def upload_images(driver, wait, img_list):
-    """Bấm 'Tải nội dung nghe nhìn lên' rồi đưa ảnh vào input file."""
-    driver.execute_script(INTERCEPT_FILE_DIALOG_JS)
-
-    click_by_xpath(
-        driver, wait,
-        "//span[contains(@class, 'upload-text') and normalize-space()='Tải nội dung nghe nhìn lên']",
-        "'Tải nội dung nghe nhìn lên'"
-    )
-    human_delay(1, 2)
-
-    file_input = driver.execute_script("return window.__lastFileInput;")
-    if file_input is None:
-        inputs = driver.find_elements(By.XPATH, "//input[@type='file']")
-        if not inputs:
-            raise RuntimeError("Không tìm thấy ô input file để tải ảnh lên")
-        file_input = inputs[-1]
-
-    if file_input.get_attribute("multiple") is not None:
-        file_input.send_keys("\n".join(img_list))
-    else:
-        for path in img_list:
-            file_input.send_keys(path)
-            human_delay(1, 2)
-
-    log(f"ĐÃ GỬI {len(img_list)} ẢNH LÊN, ĐANG CHỜ TẢI XONG...")
-
-
-def select_uploaded_images(driver, img_list):
-    """Chờ ảnh tải xong rồi bấm chọn từng ảnh dựa vào tên file."""
-    upload_wait = WebDriverWait(driver, UPLOAD_TIMEOUT)
-
-    for path in img_list:
-        name = os.path.basename(path)
-        xpath = f"//span[contains(@class, 'asset-title') and normalize-space()='{name}']"
-
-        log(f"Đang chờ ảnh {name} tải lên Flow (tối đa {UPLOAD_TIMEOUT} giây)...")
-        upload_wait.until(EC.element_to_be_clickable((By.XPATH, xpath)))
-        log(f"Ảnh {name} đã tải lên xong")
-        # Chờ thêm để ảnh load xong hẳn trước khi chọn
-        human_delay(2, 4)
-        click_by_xpath(driver, upload_wait, xpath, f"ảnh {name}")
-
-        # Ảnh xem trước bên phải có thể không hiện -> chỉ chờ một chút rồi đi tiếp
-        human_delay(3, 5)
-
-
-def add_media_to_applet(driver, wait, retries=3):
-    """Bấm 'Thêm nội dung nghe nhìn' và chờ popup đóng lại."""
-    xpath = "//button[contains(@class, 'detail-add-to-prompt-btn')]"
-    for attempt in range(retries):
-        click_by_xpath(driver, wait, xpath, "'Thêm nội dung nghe nhìn'")
-        try:
-            WebDriverWait(driver, 15).until(
-                lambda d: not [b for b in d.find_elements(By.XPATH, xpath) if b.is_displayed()]
-            )
-            log("POPUP ĐÃ ĐÓNG, ẢNH ĐÃ ĐƯỢC THÊM")
-            return
-        except TimeoutException:
-            log(f"Popup chưa đóng, bấm lại ({attempt + 1}/{retries})...")
-    raise RuntimeError("Bấm 'Thêm nội dung nghe nhìn' nhưng popup không đóng")
-
-
-GENERATE_BUTTON_XPATH = "//button[contains(normalize-space(), 'TẠO ẢNH BỐI CẢNH') or contains(normalize-space(), 'Tạo ảnh bối cảnh')]"
-
-
-def fill_prompt_and_generate(driver, prompt):
-    """Điền prompt vào ô '02. Bối cảnh mong muốn' (trong iframe applet) rồi bấm tạo ảnh."""
-    # Trang chính Flow cũng có textarea ẩn -> phải chỉ đúng ô của applet theo placeholder
-    textarea_xpath = "//textarea[starts-with(@placeholder, 'Ví dụ: Đặt trên mặt bàn')]"
-    switch_to_frame_with(driver, textarea_xpath)
-
-    textarea = driver.find_element(By.XPATH, textarea_xpath)
+    textarea = driver.find_element(By.XPATH, REQUEST_TEXTAREA_XPATH)
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", textarea)
     human_delay()
     # Phải click chuột thật vào ô trước rồi mới nhập, app mới nhận nội dung
     ActionChains(driver).move_to_element(textarea).click().perform()
-    log("ĐÃ CLICK: ô '02. Bối cảnh mong muốn'")
+    log("ĐÃ CLICK: ô nhập request")
     human_delay(1, 2)
-    # Copy prompt vào clipboard rồi Ctrl+V vào ô
-    pyperclip.copy(prompt)
+    # Xoá nội dung cũ (nếu có) rồi copy request vào clipboard và Ctrl+V vào ô
+    ActionChains(driver).key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL).perform()
+    pyperclip.copy(request_text)
     ActionChains(driver).key_down(Keys.CONTROL).send_keys("v").key_up(Keys.CONTROL).perform()
     human_delay(1, 2)
-    if not (textarea.get_attribute("value") or "").strip():
+    if (textarea.get_attribute("value") or "").strip() != request_text.strip():
         # Dự phòng nếu paste không vào
-        driver.execute_cdp_cmd("Input.insertText", {"text": prompt})
+        ActionChains(driver).key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL).perform()
+        driver.execute_cdp_cmd("Input.insertText", {"text": request_text})
         human_delay(1, 2)
-    log(f"ĐÃ ĐIỀN PROMPT ({len(textarea.get_attribute('value') or '')} ký tự)")
+    log(f"ĐÃ ĐIỀN REQUEST ({len(textarea.get_attribute('value') or '')} ký tự)")
 
-    # Nút tạo ảnh chỉ bật khi đã có ảnh sản phẩm + prompt
+
+def click_start(driver, request):
+    """Chờ nút 'BẮT ĐẦU XỬ LÝ' sáng lên rồi bấm. Trả về số ảnh đang có để biết khi nào có ảnh mới."""
     try:
-        button = WebDriverWait(driver, 30).until(lambda d: next(
-            (b for b in d.find_elements(By.XPATH, GENERATE_BUTTON_XPATH) if b.is_enabled()), False
+        button = WebDriverWait(driver, 60).until(lambda d: next(
+            (b for b in d.find_elements(By.XPATH, START_BUTTON_XPATH) if b.is_displayed() and b.is_enabled()), False
         ))
     except TimeoutException:
-        raise RuntimeError("Nút 'Tạo ảnh bối cảnh' vẫn bị khoá (chưa nhận ảnh sản phẩm hoặc prompt)")
+        raise RuntimeError("Nút 'BẮT ĐẦU XỬ LÝ' không sáng lên (tool chưa nhận request)")
 
-    img_count = count_loaded_images(driver)
     human_delay()
+    img_count = count_result_images(driver, request)
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
     driver.execute_script("arguments[0].click();", button)
-    log("ĐÃ CLICK: 'Tạo ảnh bối cảnh'")
+    log("ĐÃ CLICK: 'BẮT ĐẦU XỬ LÝ'")
     return img_count
 
 
-def count_loaded_images(driver):
+def count_result_images(driver, request):
+    """Đếm ảnh đã load trong tool, bỏ qua ảnh đầu vào (productImage, outfitImage) hiện ở phần xem trước."""
+    input_urls = [v for v in request.values() if isinstance(v, str) and v.startswith("http")]
     return driver.execute_script(
-        "return [...document.images].filter(i => i.complete && i.naturalWidth > 0).length;"
+        "return [...document.images].filter(i => i.complete && i.naturalWidth > 0"
+        " && !arguments[0].includes(i.currentSrc || i.src)).length;",
+        input_urls,
     )
 
 
-def wait_for_generation(driver, img_count_before):
-    """Chờ ảnh tạo xong: có ảnh mới hiện trong applet, hoặc nút tạo ảnh bị khoá rồi mở lại."""
+def wait_for_generation(driver, request, img_count_before):
+    """Chờ ảnh tạo xong: có ảnh mới hiện trong tool, hoặc nút 'BẮT ĐẦU XỬ LÝ' ẩn/khoá rồi hiện lại."""
     log(f"ĐANG CHỜ TẠO ẢNH (tối đa {GENERATE_TIMEOUT // 60} phút)...")
     started = time.time()
     deadline = started + GENERATE_TIMEOUT
@@ -273,9 +200,9 @@ def wait_for_generation(driver, img_count_before):
             log(f"Vẫn đang tạo ảnh... ({int(time.time() - started)} giây)")
             next_progress_log += 30
         try:
-            if count_loaded_images(driver) > img_count_before:
+            if count_result_images(driver, request) > img_count_before:
                 break
-            buttons = driver.find_elements(By.XPATH, GENERATE_BUTTON_XPATH)
+            buttons = [b for b in driver.find_elements(By.XPATH, START_BUTTON_XPATH) if b.is_displayed()]
             busy = not buttons or not buttons[0].is_enabled()
             if busy:
                 was_busy = True
@@ -391,53 +318,55 @@ def ensure_logged_in(driver):
     raise JobError("FLOW_LOGIN_REQUIRED", "Hết thời gian chờ đăng nhập Google")
 
 
-def run_flow(driver, wait, img_list, prompt):
+def normalize_value(value):
+    """Chuẩn hoá 1 giá trị trong request: link bỏ phần từ dấu '?', chuỗi bỏ ký tự xuống dòng."""
+    if isinstance(value, dict):
+        return {k: normalize_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_value(v) for v in value]
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if value.startswith(("http://", "https://")):
+        # Link S3 (có chữ ký tạm thời) -> chỉ giữ phần trước dấu '?'
+        return value.split("?", 1)[0]
+    # Bỏ ký tự xuống dòng thật và chuỗi "\n" dạng chữ, gộp khoảng trắng thừa
+    value = value.replace("\\r\\n", " ").replace("\\n", " ").replace("\\r", " ")
+    return " ".join(value.split())
+
+
+def normalize_request(request):
+    """Chuẩn hoá request rồi trả về (request đã chuẩn hoá, JSON 1 dòng để dán vào tool)."""
+    request = normalize_value(request)
+    return request, json.dumps(request, ensure_ascii=False, separators=(",", ":"))
+
+
+def run_flow(driver, wait, request):
     """Chạy toàn bộ thao tác trên Google Flow, trả về đường dẫn ảnh 2K đã tải về."""
-    # Bước 1: Vào link project Flow
-    log("Bước 1: MỞ LINK PROJECT FLOW")
+    request, request_text = normalize_request(request)
+    log(f"Request đã chuẩn hoá: {request_text[:500]}")
+
+    # Bước 1: Mở link tool trên Flow
+    log("Bước 1: MỞ LINK TOOL FLOW")
     driver.switch_to.default_content()
     log(f"Đang mở {FLOW_URL}")
     driver.get(FLOW_URL)
     ensure_logged_in(driver)
 
-    # Bước 2: Bấm 'Tạo ảnh từ câu lệnh'
-    log("Bước 2: BẤM 'Tạo ảnh từ câu lệnh'")
-    click_by_xpath(
-        driver, wait,
-        "//span[contains(@class, 'applet-title') and normalize-space()='Tạo ảnh từ câu lệnh']",
-        "'Tạo ảnh từ câu lệnh'"
-    )
+    # Bước 2 + 4: Click vào ô nhập và điền nội dung request của job
+    log("Bước 2: CLICK Ô NHẬP VÀ ĐIỀN REQUEST")
+    fill_request(driver, request_text)
 
-    # Bước 3: Bấm 'Tải ảnh sản phẩm'
-    log("Bước 3: BẤM 'Tải ảnh sản phẩm'")
-    upload_xpath = "//p[normalize-space()='Tải ảnh sản phẩm']"
-    switch_to_frame_with(driver, upload_xpath)
-    click_by_xpath(driver, wait, upload_xpath, "'Tải ảnh sản phẩm'")
-    # Popup chọn nội dung nghe nhìn nằm ở trang chính của Flow
-    driver.switch_to.default_content()
+    # Bước 5: Chờ nút 'BẮT ĐẦU XỬ LÝ' sáng lên và bấm để tạo ảnh
+    log("Bước 3: BẤM 'BẮT ĐẦU XỬ LÝ'")
+    img_count = click_start(driver, request)
 
-    # Bước 4: Trong popup, tải ảnh đầu vào lên
-    log("Bước 4: TẢI ẢNH LÊN")
-    upload_images(driver, wait, img_list)
+    # Chờ Flow tạo ảnh xong
+    log("Bước 4: CHỜ TẠO ẢNH")
+    wait_for_generation(driver, request, img_count)
 
-    # Bước 5: Chờ ảnh load xong và chọn ảnh theo tên
-    log("Bước 5: CHỌN ẢNH VỪA TẢI LÊN")
-    select_uploaded_images(driver, img_list)
-
-    # Bước 6: Bấm 'Thêm nội dung nghe nhìn'
-    log("Bước 6: BẤM 'Thêm nội dung nghe nhìn'")
-    add_media_to_applet(driver, wait)
-
-    # Bước 7: Điền prompt vào ô '02. Bối cảnh mong muốn' và bấm tạo ảnh
-    log("Bước 7: ĐIỀN PROMPT VÀ BẤM TẠO ẢNH")
-    img_count = fill_prompt_and_generate(driver, prompt)
-
-    # Bước 8: Chờ ảnh tạo xong
-    log("Bước 8: CHỜ TẠO ẢNH")
-    wait_for_generation(driver, img_count)
-
-    # Bước 9: Tab 'Hình ảnh' -> chuột phải ảnh đầu tiên -> Tải xuống -> 2K
-    log("Bước 9: TẢI ẢNH ĐẦU TIÊN Ở ĐỘ PHÂN GIẢI 2K")
+    # Về tab 'Hình ảnh' -> chuột phải ảnh đầu tiên -> Tải xuống -> 2K
+    log("Bước 5: TẢI ẢNH ĐẦU TIÊN Ở ĐỘ PHÂN GIẢI 2K")
     return download_first_image_2k(driver, wait)
 
 
@@ -455,7 +384,10 @@ def api_session():
 
 
 def claim_job(session):
-    """Nhận 1 job. Trả về dict job, hoặc None khi chưa có việc."""
+    """
+    Nhận 1 job. Trả về dict job {"id": ..., "request": {...}}, hoặc None khi chưa có việc (204).
+    Phải trả kết quả trong lease_minutes của server (mặc định 15 phút), quá hạn job giao cho worker khác.
+    """
     response = session.get(f"{API_BASE_URL}/jobs", timeout=HTTP_TIMEOUT)
     if response.status_code == 204:
         return None
@@ -465,28 +397,12 @@ def claim_job(session):
     return response.json()["data"]
 
 
-def download_input_image(job):
-    """Tải ảnh đầu vào từ link S3 tạm về job/img. Tên file duy nhất để chọn đúng ảnh trong thư viện Flow."""
-    extension = mimetypes.guess_extension(job.get("input_mime") or "") or ".png"
-    if extension == ".jpe":
-        extension = ".jpg"
-    path = os.path.join(IMG_DIR, f"ai90-job-{job['id']}-{uuid.uuid4().hex[:8]}{extension}")
-
-    log("Đang tải ảnh đầu vào từ server...")
-    response = requests.get(job["input_image_url"], timeout=HTTP_TIMEOUT)
-    if response.status_code != 200:
-        raise JobError("INPUT_DOWNLOAD_FAILED", f"Không tải được ảnh đầu vào (HTTP {response.status_code})")
-    with open(path, "wb") as f:
-        f.write(response.content)
-    log(f"ĐÃ TẢI ẢNH ĐẦU VÀO: {path} ({len(response.content) // 1024} KB)")
-    return path
-
-
-def build_prompt(job):
-    prompt = (job.get("prompt") or "").strip()
-    if not prompt:
-        raise JobError("EMPTY_PROMPT", "Job không có prompt")
-    return prompt
+def get_request(job):
+    """Lấy trường 'request' của job để dán vào tool Flow."""
+    request = job.get("request")
+    if not isinstance(request, dict) or not str(request.get("prompt") or "").strip():
+        raise JobError("EMPTY_PROMPT", "Job không có request hoặc request không có prompt")
+    return request
 
 
 def submit_completed(session, job_id, image_path):
@@ -515,7 +431,8 @@ def log_submit_result(job_id, response):
     if response.status_code == 200:
         log(f"JOB #{job_id}: SERVER ĐÃ NHẬN KẾT QUẢ ({response.json()['data']['status']})")
     elif response.status_code == 409:
-        log(f"JOB #{job_id}: SERVER TỪ CHỐI (409) - job đã quá hạn và giao cho worker khác, hoặc đã có kết quả")
+        # JOB_NOT_ASSIGNED: job đã quá hạn và giao cho worker khác, hoặc đã có kết quả
+        log(f"JOB #{job_id}: SERVER TỪ CHỐI (409): {response.text[:500]}")
     else:
         log(f"JOB #{job_id}: GỬI KẾT QUẢ LỖI HTTP {response.status_code}: {response.text[:500]}")
 
@@ -534,15 +451,14 @@ def process_job(driver, wait, session, job):
     job_id = job["id"]
     started = time.time()
     log("=" * 60)
-    log(f"NHẬN JOB #{job_id} (lần nhận {job.get('attempt')}, hạn trả kết quả {job.get('lease_expires_at')})")
+    log(f"NHẬN JOB #{job_id}")
 
-    input_path = output_path = None
+    output_path = None
     try:
-        prompt = build_prompt(job)
-        log(f"Prompt ({len(prompt)} ký tự): {prompt[:200]}{'...' if len(prompt) > 200 else ''}")
-        input_path = download_input_image(job)
+        request = get_request(job)
+        log(f"Request: {json.dumps(request, ensure_ascii=False)[:500]}")
 
-        output_path = run_flow(driver, wait, [input_path], prompt)
+        output_path = run_flow(driver, wait, request)
         log_submit_result(job_id, submit_completed(session, job_id, output_path))
     except JobError as e:
         log(f"JOB #{job_id} LỖI [{e.code}]: {e}")
@@ -555,7 +471,7 @@ def process_job(driver, wait, session, job):
             driver.switch_to.default_content()
         except Exception:
             pass
-        remove_files(input_path, output_path)
+        remove_files(output_path)
         log(f"JOB #{job_id} KẾT THÚC sau {int(time.time() - started)} giây")
         log("=" * 60)
 
@@ -596,7 +512,30 @@ def chrome_alive(driver):
         return False
 
 
+def run_mock_job():
+    """Chưa gọi API A51: chạy 1 lần với job giả lập, giữ ảnh 2K trong job/output."""
+    log("CHẾ ĐỘ GIẢ LẬP: không gọi API, dùng MOCK_JOB (bỏ AI90_USE_MOCK=1 để gọi API thật)")
+    driver = None
+    started = time.time()
+    try:
+        driver, wait = start_chrome()
+        request = get_request(MOCK_JOB)
+        log(f"Request: {json.dumps(request, ensure_ascii=False)}")
+        output_path = run_flow(driver, wait, request)
+        log(f"HOÀN THÀNH sau {int(time.time() - started)} giây, ảnh lưu tại: {output_path}")
+    except KeyboardInterrupt:
+        log("ĐÃ DỪNG (Ctrl+C).")
+    except Exception as e:
+        log(f"LỖI: {e}")
+    finally:
+        close_chrome(driver)
+
+
 def main():
+    if USE_MOCK:
+        run_mock_job()
+        return
+
     if not WORKER_TOKEN:
         raise SystemExit("Chưa đặt biến môi trường AI90_WORKER_TOKEN (tạo bằng: php artisan workers:create {name}).")
 
