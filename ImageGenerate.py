@@ -4,7 +4,7 @@ Worker tạo ảnh cho AI90.
 Vòng lặp:
   1. GET  {API_BASE_URL}/jobs        -> nhận 1 job, trường "request" là JSON gửi cho tool Flow
                                         (productImage, outfitImage, prompt, aspectRatio, modelDisplayName).
-  2. Mở tool trên Google Flow, dán JSON request vào ô nhập, bấm 'BẮT ĐẦU XỬ LÝ',
+  2. Mở tool trên Google Flow, dán JSON request vào ô nhập, bấm tạo ảnh (btn_image_generate),
      chờ tạo xong rồi tải ảnh 2K về job/output.
   3. POST {API_BASE_URL}/jobs/{id}   -> gửi ảnh kết quả (status=completed) hoặc báo lỗi (status=failed).
 
@@ -132,8 +132,8 @@ def js_click(driver, element):
     driver.execute_script("arguments[0].click();", element)
 
 
-REQUEST_TEXTAREA_XPATH = "//textarea[contains(@placeholder, 'Mô tả bức ảnh bạn muốn')]"
-START_BUTTON_XPATH = "//button[contains(normalize-space(), 'BẮT ĐẦU XỬ LÝ')]"
+REQUEST_TEXTAREA_XPATH = "//textarea[@id='prompt_id']"
+START_BUTTON_XPATH = "//button[@id='btn_image_generate']"
 
 
 def fill_request(driver, request_text):
@@ -160,20 +160,26 @@ def fill_request(driver, request_text):
     log(f"ĐÃ ĐIỀN REQUEST ({len(textarea.get_attribute('value') or '')} ký tự)")
 
 
+def button_ready(button):
+    """Nút sáng = đang hiện, không bị disabled / aria-disabled."""
+    return (button.is_displayed() and button.is_enabled()
+            and (button.get_attribute("aria-disabled") or "").lower() != "true")
+
+
 def click_start(driver, request):
-    """Chờ nút 'BẮT ĐẦU XỬ LÝ' sáng lên rồi bấm. Trả về số ảnh đang có để biết khi nào có ảnh mới."""
+    """Chờ nút tạo ảnh (btn_image_generate) sáng lên rồi bấm. Trả về số ảnh đang có để biết khi nào có ảnh mới."""
     try:
         button = WebDriverWait(driver, 60).until(lambda d: next(
-            (b for b in d.find_elements(By.XPATH, START_BUTTON_XPATH) if b.is_displayed() and b.is_enabled()), False
+            (b for b in d.find_elements(By.XPATH, START_BUTTON_XPATH) if button_ready(b)), False
         ))
     except TimeoutException:
-        raise RuntimeError("Nút 'BẮT ĐẦU XỬ LÝ' không sáng lên (tool chưa nhận request)")
+        raise RuntimeError("Nút tạo ảnh (btn_image_generate) không sáng lên (tool chưa nhận request)")
 
     human_delay()
     img_count = count_result_images(driver, request)
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
     driver.execute_script("arguments[0].click();", button)
-    log("ĐÃ CLICK: 'BẮT ĐẦU XỬ LÝ'")
+    log("ĐÃ CLICK: tạo ảnh (btn_image_generate)")
     return img_count
 
 
@@ -188,7 +194,7 @@ def count_result_images(driver, request):
 
 
 def wait_for_generation(driver, request, img_count_before):
-    """Chờ ảnh tạo xong: có ảnh mới hiện trong tool, hoặc nút 'BẮT ĐẦU XỬ LÝ' ẩn/khoá rồi hiện lại."""
+    """Chờ ảnh tạo xong: có ảnh mới hiện trong tool, hoặc nút tạo ảnh (btn_image_generate) ẩn/khoá rồi hiện lại."""
     log(f"ĐANG CHỜ TẠO ẢNH (tối đa {GENERATE_TIMEOUT // 60} phút)...")
     started = time.time()
     deadline = started + GENERATE_TIMEOUT
@@ -203,7 +209,7 @@ def wait_for_generation(driver, request, img_count_before):
             if count_result_images(driver, request) > img_count_before:
                 break
             buttons = [b for b in driver.find_elements(By.XPATH, START_BUTTON_XPATH) if b.is_displayed()]
-            busy = not buttons or not buttons[0].is_enabled()
+            busy = not buttons or not button_ready(buttons[0])
             if busy:
                 was_busy = True
             elif was_busy:
@@ -357,8 +363,8 @@ def run_flow(driver, wait, request):
     log("Bước 2: CLICK Ô NHẬP VÀ ĐIỀN REQUEST")
     fill_request(driver, request_text)
 
-    # Bước 5: Chờ nút 'BẮT ĐẦU XỬ LÝ' sáng lên và bấm để tạo ảnh
-    log("Bước 3: BẤM 'BẮT ĐẦU XỬ LÝ'")
+    # Bước 5: Chờ nút tạo ảnh (btn_image_generate) sáng lên và bấm để tạo ảnh
+    log("Bước 3: BẤM tạo ảnh (btn_image_generate)")
     img_count = click_start(driver, request)
 
     # Chờ Flow tạo ảnh xong
