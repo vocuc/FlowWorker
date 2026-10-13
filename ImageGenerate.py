@@ -78,7 +78,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "job", "output")  # Nơi lưu ảnh 2K tải xuống
 LOGIN_TIMEOUT = 600     # Thời gian tối đa (giây) chờ đăng nhập Google lần đầu
 GENERATE_TIMEOUT = 600  # Thời gian tối đa (giây) chờ tạo ảnh xong
-DOWNLOAD_TIMEOUT = 300  # Thời gian tối đa (giây) chờ tải ảnh 2K về máy
+DOWNLOAD_START_TIMEOUT = 15  # Quá bấy nhiêu giây ảnh 2K chưa bắt đầu tải -> báo job thất bại và đóng Chrome
+DOWNLOAD_TIMEOUT = 300       # Ảnh đã bắt đầu tải: thời gian tối đa (giây) chờ tải xong
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -264,18 +265,24 @@ def download_first_image_2k(driver, wait):
     log("ĐÃ CLICK: '2K'")
 
     log(f"ĐANG CHỜ TẢI ẢNH 2K VỀ {OUTPUT_DIR} ...")
-    deadline = time.time() + DOWNLOAD_TIMEOUT
-    while time.time() < deadline:
-        time.sleep(2)
-        new_files = [
-            f for f in set(os.listdir(OUTPUT_DIR)) - files_before
-            if not f.endswith((".crdownload", ".tmp"))
-        ]
-        if new_files:
-            path = os.path.join(OUTPUT_DIR, new_files[0])
+    started = time.time()
+    download_started = False
+    while True:
+        time.sleep(1)
+        new_files = set(os.listdir(OUTPUT_DIR)) - files_before
+        done_files = [f for f in new_files if not f.endswith((".crdownload", ".tmp"))]
+        if done_files:
+            path = os.path.join(OUTPUT_DIR, done_files[0])
             log(f"ĐÃ TẢI XONG: {path}")
             return path
-    raise JobError("DOWNLOAD_TIMEOUT", "Hết thời gian chờ tải ảnh 2K")
+        if new_files and not download_started:
+            download_started = True
+            log(f"ẢNH 2K ĐÃ BẮT ĐẦU TẢI sau {int(time.time() - started)} giây")
+        elapsed = time.time() - started
+        if not download_started and elapsed >= DOWNLOAD_START_TIMEOUT:
+            raise JobError("DOWNLOAD_TIMEOUT", f"Sau {DOWNLOAD_START_TIMEOUT} giây ảnh 2K chưa bắt đầu tải")
+        if elapsed >= DOWNLOAD_TIMEOUT:
+            raise JobError("DOWNLOAD_TIMEOUT", f"Sau {DOWNLOAD_TIMEOUT} giây ảnh 2K vẫn chưa tải xong")
 
 
 def switch_to_frame_with(driver, xpath, timeout=30):
@@ -454,12 +461,14 @@ def remove_files(*paths):
 
 
 def process_job(driver, wait, session, job):
+    """Xử lý 1 job. Trả về True nếu đã đóng Chrome (tải ảnh quá hạn) để lần sau mở lại."""
     job_id = job["id"]
     started = time.time()
     log("=" * 60)
     log(f"NHẬN JOB #{job_id}")
 
     output_path = None
+    chrome_closed = False
     try:
         request = get_request(job)
         log(f"Request: {json.dumps(request, ensure_ascii=False)[:500]}")
@@ -468,18 +477,23 @@ def process_job(driver, wait, session, job):
         log_submit_result(job_id, submit_completed(session, job_id, output_path))
     except JobError as e:
         log(f"JOB #{job_id} LỖI [{e.code}]: {e}")
+        chrome_closed = e.code == "DOWNLOAD_TIMEOUT"
         log_submit_result(job_id, submit_failed(session, job_id, e.code, e))
     except Exception as e:
         log(f"JOB #{job_id} LỖI: {e}")
         log_submit_result(job_id, submit_failed(session, job_id, "WORKER_ERROR", e))
     finally:
-        try:
-            driver.switch_to.default_content()
-        except Exception:
-            pass
+        if chrome_closed:
+            close_chrome(driver)
+        else:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
         remove_files(output_path)
         log(f"JOB #{job_id} KẾT THÚC sau {int(time.time() - started)} giây")
         log("=" * 60)
+    return chrome_closed
 
 
 def start_chrome():
@@ -588,7 +602,8 @@ def main():
                     continue
 
             try:
-                process_job(driver, wait, session, job)
+                if process_job(driver, wait, session, job):
+                    driver = wait = None
             except requests.RequestException as e:
                 # Không gửi được kết quả: server sẽ giao lại job khi hết hạn
                 log(f"JOB #{job['id']}: KHÔNG GỬI ĐƯỢC KẾT QUẢ: {e}")
