@@ -3,7 +3,7 @@ Worker đăng bài TikTok cho A51 (nghiệp vụ: note/dang-tiktok-qua-worker.tx
 
 Vòng lặp:
   1. GET  {API_BASE_URL}/publish-jobs      -> nhận 1 job (bài của tài khoản A51 được gắn với worker này).
-     Chưa có job thì KHÔNG mở Chrome. Lưu nháp xong dừng 2 giây rồi tắt Chrome; job lỗi thì giữ Chrome để xem lại.
+     Chưa có job thì KHÔNG mở Chrome. Lưu nháp xong dừng 1 giây rồi tắt Chrome; job lỗi thì giữ Chrome để xem lại.
   2. Có job: mở Chrome (profile riêng). CHƯA ĐĂNG NHẬP TikTok thì dừng lại chờ đăng nhập tay trên cửa sổ Chrome,
      tối đa 10 phút (job chỉ có 15 phút), quá hạn -> failed TIKTOK_LOGIN_REQUIRED.
      Tải ảnh, chèn logo shop (nếu cấu hình), mở TikTok Studio, tải ảnh lên, điền mô tả, bấm LƯU NHÁP (không bấm Đăng).
@@ -69,7 +69,7 @@ LEASE_SAFETY = 90            # Còn ít hơn bấy nhiêu giây thì KHÔNG bấ
 LOGIN_CHECK_INTERVAL = 10    # Đang chờ đăng nhập: kiểm tra lại mỗi bấy nhiêu giây
 LOGIN_WAIT_RESERVE = 5 * 60  # Đang giữ job mà chưa đăng nhập: chờ tối đa (15 phút - bấy nhiêu), chừa thời gian đăng bài
 UPLOAD_TIMEOUT = 300         # Thời gian tối đa chờ TikTok tải ảnh lên xong
-CLOSE_AFTER_DRAFT_DELAY = 2  # Lưu nháp xong: dừng bấy nhiêu giây rồi tắt Chrome
+CLOSE_AFTER_DRAFT_DELAY = 1  # Lưu nháp xong: dừng bấy nhiêu giây rồi tắt Chrome
 HUMAN_DELAY_MIN = 1         # Mỗi thao tác trên trình duyệt nghỉ ngẫu nhiên từ HUMAN_DELAY_MIN
 HUMAN_DELAY_MAX = 3          # đến HUMAN_DELAY_MAX giây
 DRAFT_TIMEOUT = 60           # Thời gian tối đa chờ TikTok báo đã lưu nháp
@@ -353,8 +353,16 @@ def check_account(driver, account):
     log(f"Đang đăng nhập đúng tài khoản @{actual}")
 
 
+def is_shown(element):
+    """is_displayed() nhưng phần tử đã mất (trang vừa chuyển) thì coi như không hiện thay vì ném lỗi."""
+    try:
+        return element.is_displayed()
+    except StaleElementReferenceException:
+        return False
+
+
 def check_captcha(driver):
-    if any(e.is_displayed() for e in driver.find_elements(By.CSS_SELECTOR, CAPTCHA_CSS)):
+    if any(is_shown(e) for e in driver.find_elements(By.CSS_SELECTOR, CAPTCHA_CSS)):
         raise JobError("TIKTOK_CAPTCHA", "TikTok bắt giải captcha")
 
 
@@ -368,7 +376,7 @@ def check_still_logged_in(driver):
 # ======================================
 
 def find_visible(driver, by, value):
-    return next((e for e in driver.find_elements(by, value) if e.is_displayed()), None)
+    return next((e for e in driver.find_elements(by, value) if is_shown(e)), None)
 
 
 def find_button(driver, texts):
@@ -554,7 +562,7 @@ def save_draft(driver):
 
     started = time.time()
     while time.time() - started < DRAFT_TIMEOUT:
-        time.sleep(2)
+        time.sleep(1)
         check_captcha(driver)
         # Lưu xong TikTok rời trang soạn bài (sang trang quản lý nội dung / trang tải lên mới) hoặc báo "draft saved"
         url = driver.current_url
@@ -724,10 +732,10 @@ def process_job(driver, session, job):
     log(f"NHẬN JOB #{job_id}: bài #{request.get('post_id')}, {len(request.get('images') or [])} ảnh")
     try:
         run_job(driver, job, claimed_at)
-        # Báo ngay sau khi lưu nháp (tránh quá hạn), rồi mới tắt Chrome
+        # Lưu nháp xong: tắt Chrome ngay (không chờ gửi kết quả, gửi có thể chờ mạng lâu), rồi mới báo kết quả
+        finish_after_draft(driver)
         log("Bước 7: BÁO KẾT QUẢ")
         submit_completed(session, job_id)
-        finish_after_draft(driver)
         return True
     except JobError as e:
         log(f"JOB #{job_id} LỖI [{e.code}]: {e}")
