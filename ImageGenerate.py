@@ -80,6 +80,7 @@ LOGIN_TIMEOUT = 600     # Thời gian tối đa (giây) chờ đăng nhập Goog
 GENERATE_TIMEOUT = 600  # Thời gian tối đa (giây) chờ tạo ảnh xong
 DOWNLOAD_START_TIMEOUT = 15  # Quá bấy nhiêu giây ảnh 2K chưa bắt đầu tải -> báo job thất bại và đóng Chrome
 DOWNLOAD_TIMEOUT = 300       # Ảnh đã bắt đầu tải: thời gian tối đa (giây) chờ tải xong
+DOWNLOAD_RETRIES = 2         # Tải ảnh 2K lỗi -> thử lại thêm bấy nhiêu lần trước khi báo job thất bại
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -226,7 +227,33 @@ def wait_for_generation(driver, request, img_count_before):
     log(f"ẢNH ĐÃ TẠO XONG sau {int(time.time() - started)} giây")
 
 
-def download_first_image_2k(driver, wait):
+def download_first_image_2k_with_retry(driver, wait):
+    """Tải ảnh 2K, lỗi thì thử lại thêm DOWNLOAD_RETRIES lần rồi mới báo lỗi."""
+    # Giữ danh sách file từ trước lần thử đầu: nếu lần trước tải xong muộn thì vẫn nhận file đó
+    files_before = set(os.listdir(OUTPUT_DIR))
+    attempts = DOWNLOAD_RETRIES + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            return download_first_image_2k(driver, wait, files_before)
+        except JobError as e:
+            if e.code != "DOWNLOAD_TIMEOUT" or attempt == attempts:
+                raise
+            log(f"TẢI ẢNH 2K LỖI (lần {attempt}/{attempts}): [{e.code}] {e}")
+        except Exception as e:
+            if attempt == attempts:
+                raise
+            log(f"TẢI ẢNH 2K LỖI (lần {attempt}/{attempts}): {e}")
+        # Đóng menu chuột phải còn mở (nếu có) rồi thử lại
+        try:
+            driver.switch_to.default_content()
+            ActionChains(driver).send_keys(Keys.ESCAPE).send_keys(Keys.ESCAPE).perform()
+        except Exception:
+            pass
+        human_delay(2, 4)
+        log(f"THỬ TẢI LẠI ẢNH 2K (lần {attempt + 1}/{attempts})")
+
+
+def download_first_image_2k(driver, wait, files_before):
     """Vào tab 'Hình ảnh', chuột phải ảnh đầu tiên -> Tải xuống -> 2K, chờ file tải về job/output."""
     driver.switch_to.default_content()
 
@@ -240,8 +267,6 @@ def download_first_image_2k(driver, wait):
     ))
     time.sleep(3)  # Chờ lưới ảnh ổn định
     first_img = next(i for i in driver.find_elements(By.CSS_SELECTOR, "img.image") if i.is_displayed())
-
-    files_before = set(os.listdir(OUTPUT_DIR))
 
     ActionChains(driver).move_to_element(first_img).context_click(first_img).perform()
     log("ĐÃ CHUỘT PHẢI: ảnh đầu tiên")
@@ -380,7 +405,7 @@ def run_flow(driver, wait, request):
 
     # Về tab 'Hình ảnh' -> chuột phải ảnh đầu tiên -> Tải xuống -> 2K
     log("Bước 5: TẢI ẢNH ĐẦU TIÊN Ở ĐỘ PHÂN GIẢI 2K")
-    return download_first_image_2k(driver, wait)
+    return download_first_image_2k_with_retry(driver, wait)
 
 
 # ======================================
