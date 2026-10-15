@@ -556,9 +556,11 @@ def save_draft(driver):
     if button is None or not button_ready(button):
         raise JobError("TIKTOK_DRAFT_FAILED", "Không tìm thấy nút Lưu nháp hoặc nút đang khoá")
 
+    # Đọc chữ nút TRƯỚC khi bấm: bấm xong TikTok chuyển trang / vẽ lại, nút cũ mất (stale element)
+    label = " ".join(button.text.split())
     url_before = driver.current_url
     js_click(driver, button)
-    log(f"ĐÃ CLICK: {' '.join(button.text.split())}")
+    log(f"ĐÃ CLICK: {label}")
 
     started = time.time()
     while time.time() - started < DRAFT_TIMEOUT:
