@@ -4,6 +4,11 @@ _Ghi lại từ buổi thảo luận ngày 2026-10-14. Chưa viết code, đây 
 
 > **Cập nhật 2026-10-14:** FlowKit **không tự đăng TikTok**. FlowKit chỉ tạo ảnh, viết tiêu đề, nội dung, hashtag rồi tạo thành **một bài viết trên A51**. Người dùng xem bài trên A51, đồng ý thì bấm **"Đăng bài"** trên A51, và **A51 tự gửi bài sang TikTok**.
 >
+> **Cập nhật 3 (2026-10-16):** Hướng đã đổi: FlowKit **có** worker đăng bài qua trình duyệt, mỗi nền tảng một worker
+> (`python worker.py tiktok|facebook|instagram`, code chung ở `flowkit/`, 3 skill `.claude/skills/dang-*`). TikTok chỉ lưu nháp,
+> Facebook / Instagram đăng thẳng. A51 tạo 1 job / nền tảng (`social_posts`, `social_publish_jobs`, `publish_accounts`).
+> Nghiệp vụ mới nhất: `D:\a90-fe\note\dang-bai-da-nen-tang.txt`. Các mục dưới về "A51 gọi TikTok API" không còn đúng.
+>
 > **Cập nhật 2 (2026-10-14):** Phần viết nội dung tách thành **worker riêng (content worker)**, không gắn chết với Claude. Trước mắt dùng Claude, sau này có thể đổi sang **ChatGPT, Gemini, Grok** chỉ bằng cấu hình.
 
 ## 1. Hiện trạng

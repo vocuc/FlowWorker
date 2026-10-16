@@ -1,0 +1,6 @@
+.env
+__pycache__/
+# Thư mục tạm / ảnh chụp lỗi của worker đăng bài
+job/tiktok/
+job/facebook/
+job/instagram/
