@@ -1,0 +1,5 @@
+.env
+__pycache__/
+# Thư mục tạm / ảnh chụp lỗi của từng máy (job/phone1/...), giữ job/output (ảnh chạy thử)
+job/*
+!job/output/
