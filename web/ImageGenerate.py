@@ -53,6 +53,8 @@ POLL_INTERVAL = 5        # Giây nghỉ khi chưa có job
 IDLE_LOG_INTERVAL = 60   # Khi chưa có job: cứ mỗi bấy nhiêu giây in 1 dòng "vẫn đang chờ"
 API_ERROR_DELAY = 15     # Giây nghỉ khi không gọi được API
 HTTP_TIMEOUT = 120       # Timeout mỗi request tới API / tải ảnh đầu vào
+SUBMIT_ATTEMPTS = 4      # Số lần thử gửi kết quả khi rớt kết nối
+SUBMIT_RETRY_DELAY = 10  # Giây nghỉ giữa các lần thử gửi kết quả
 
 USE_MOCK = os.environ.get("AI90_USE_MOCK", "0") == "1"
 
@@ -72,7 +74,7 @@ MOCK_JOB = {
 
 FLOW_URL = os.environ.get(
     "AI90_FLOW_URL",
-    "https://flow.google.com/u/0/project/c53f1d47-14d7-47f1-8654-8f0dd599ae34/tool/5267a6b1-43f5-44bd-9795-52b22d0ab4fa",
+    "https://flow.google.com/project/4f671f1c-7c6f-407b-8414-9c23d663e213/tool/f42437b1-13b9-43cf-9d0b-db4b2c3c70e8?fromViewSource=tools",
 )
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "job", "output")  # Nơi lưu ảnh 2K tải xuống
@@ -90,7 +92,7 @@ chrome_options.add_argument("--start-maximized")
 # Tạo Profile RIÊNG cho Selenium, KHÔNG dùng Default
 # (Profile này cần đăng nhập sẵn tài khoản Google /u/0)
 chrome_options.add_argument(r"user-data-dir=C:\selenium-profile")
-chrome_options.add_argument("profile-directory=Profile1")
+chrome_options.add_argument("profile-directory=Profile2")
 
 # Fix DevToolsActivePort
 chrome_options.add_argument("--remote-debugging-port=9222")
@@ -443,26 +445,41 @@ def get_request(job):
     return request
 
 
+def post_result(session, job_id, data, image_path=None):
+    """
+    Gửi kết quả job, thử lại khi rớt kết nối.
+    Kết nối keep-alive mở từ lúc nhận job đã nằm im vài phút trong lúc tạo ảnh, server thường
+    đã đóng nó -> ConnectionResetError 10054. Vì vậy bỏ kết nối cũ trước khi gửi và thử lại nếu rớt.
+    Nếu lần trước thực ra server đã nhận, lần gửi lại sẽ nhận 409 (job đã có kết quả).
+    """
+    for attempt in range(1, SUBMIT_ATTEMPTS + 1):
+        session.close()  # Bỏ các kết nối cũ trong pool, mở kết nối mới
+        try:
+            if image_path is None:
+                return session.post(f"{API_BASE_URL}/jobs/{job_id}", data=data, timeout=HTTP_TIMEOUT)
+            mime = mimetypes.guess_type(image_path)[0] or "application/octet-stream"
+            with open(image_path, "rb") as f:
+                return session.post(
+                    f"{API_BASE_URL}/jobs/{job_id}",
+                    data=data,
+                    files={"image": (os.path.basename(image_path), f, mime)},
+                    timeout=HTTP_TIMEOUT,
+                )
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if attempt == SUBMIT_ATTEMPTS:
+                raise
+            log(f"JOB #{job_id}: GỬI KẾT QUẢ RỚT KẾT NỐI (lần {attempt}/{SUBMIT_ATTEMPTS}): {e}. Thử lại sau {SUBMIT_RETRY_DELAY} giây...")
+            time.sleep(SUBMIT_RETRY_DELAY)
+
+
 def submit_completed(session, job_id, image_path):
-    mime = mimetypes.guess_type(image_path)[0] or "application/octet-stream"
-    log(f"JOB #{job_id}: đang gửi ảnh kết quả lên server ({os.path.getsize(image_path) // 1024} KB, {mime})...")
-    with open(image_path, "rb") as f:
-        response = session.post(
-            f"{API_BASE_URL}/jobs/{job_id}",
-            data={"status": "completed"},
-            files={"image": (os.path.basename(image_path), f, mime)},
-            timeout=HTTP_TIMEOUT,
-        )
-    return response
+    log(f"JOB #{job_id}: đang gửi ảnh kết quả lên server ({os.path.getsize(image_path) // 1024} KB)...")
+    return post_result(session, job_id, {"status": "completed"}, image_path)
 
 
 def submit_failed(session, job_id, code, message):
     log(f"JOB #{job_id}: đang báo lỗi [{code}] lên server...")
-    return session.post(
-        f"{API_BASE_URL}/jobs/{job_id}",
-        data={"status": "failed", "error_code": code, "error_message": str(message)[:490]},
-        timeout=HTTP_TIMEOUT,
-    )
+    return post_result(session, job_id, {"status": "failed", "error_code": code, "error_message": str(message)[:490]})
 
 
 def log_submit_result(job_id, response):
@@ -499,7 +516,6 @@ def process_job(driver, wait, session, job):
         log(f"Request: {json.dumps(request, ensure_ascii=False)[:500]}")
 
         output_path = run_flow(driver, wait, request)
-        log_submit_result(job_id, submit_completed(session, job_id, output_path))
     except JobError as e:
         log(f"JOB #{job_id} LỖI [{e.code}]: {e}")
         chrome_closed = e.code == "DOWNLOAD_TIMEOUT"
@@ -507,6 +523,10 @@ def process_job(driver, wait, session, job):
     except Exception as e:
         log(f"JOB #{job_id} LỖI: {e}")
         log_submit_result(job_id, submit_failed(session, job_id, "WORKER_ERROR", e))
+    else:
+        # Để ngoài try: rớt mạng khi gửi ảnh không được báo nhầm thành job lỗi.
+        # Gửi hỏng hẳn thì RequestException lên main(), server giao lại job khi hết hạn.
+        log_submit_result(job_id, submit_completed(session, job_id, output_path))
     finally:
         if chrome_closed:
             close_chrome(driver)
