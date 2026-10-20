@@ -6,7 +6,9 @@ Vòng lặp:
                                         (productImage, outfitImage, prompt, aspectRatio, modelDisplayName).
   2. Mở tool trên Google Flow, dán JSON request vào ô nhập, bấm tạo ảnh (btn_image_generate),
      chờ tạo xong rồi tải ảnh 2K về job/output.
-  3. POST {API_BASE_URL}/jobs/{id}   -> gửi ảnh kết quả (status=completed) hoặc báo lỗi (status=failed).
+  3. Job có "logo" (ảnh đại diện shop, người dùng bật "Chèn logo vào ảnh" khi tạo lô): chèn logo vào góc dưới bên phải
+     ảnh 2K (flowkit/media.py apply_logo). Logo nằm ngoài "request" nên không bị dán vào Flow.
+  4. POST {API_BASE_URL}/jobs/{id}   -> gửi ảnh kết quả (status=completed) hoặc báo lỗi (status=failed).
 
 Chế độ giả lập (AI90_USE_MOCK=1): không gọi API, chạy 1 lần với MOCK_JOB, giữ ảnh trong job/output.
 
@@ -14,6 +16,8 @@ Cấu hình qua biến môi trường:
   AI90_USE_MOCK       mặc định 0 (gọi API thật). Đặt 1 để dùng job giả lập.
   AI90_API_BASE_URL   mặc định https://admin.a51.vn/api/v1
   AI90_WORKER_TOKEN   token tạo bằng: php artisan workers:create {name}   (bắt buộc khi gọi API thật)
+  IMAGE_LOGO_WIDTH, _HEIGHT, _RADIUS, _X, _Y (hoặc LOGO_* dùng chung)   vị trí / kích thước logo shop,
+                      % cạnh ngắn của ảnh (mặc định 7, 7, 50, 2, 2), xem flowkit/media.py load_logo_layout
 
 Chạy: python ImageGenerate.py   (Ctrl+C để dừng)
 """
@@ -39,6 +43,9 @@ import random
 import os
 from datetime import datetime
 
+from flowkit.errors import JobError as MediaJobError
+from flowkit.media import apply_logo, load_logo_layout
+
 # Console Windows (cp1252) không in được tiếng Việt -> ép stdout/stderr sang UTF-8
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):
@@ -58,9 +65,12 @@ SUBMIT_RETRY_DELAY = 10  # Giây nghỉ giữa các lần thử gửi kết qu�
 
 USE_MOCK = os.environ.get("AI90_USE_MOCK", "0") == "1"
 
+# Vị trí / kích thước logo shop, kiểm tra ngay lúc khởi động (sai -> dừng worker). File logo lấy từ job.
+LOGO_LAYOUT = load_logo_layout("IMAGE")
+
 # Dữ liệu giả lập thay cho "data" của GET /jobs (dùng khi AI90_USE_MOCK=1).
-# Server trả {"data": {"id": <mã job>, "request": {...}}}; trong request mỗi ảnh đầu vào là một khoá
-# camelCase theo trường của creative (productImage, outfitImage, ...), kèm prompt, aspectRatio, modelDisplayName.
+# Server trả {"data": {"id": <mã job>, "request": {...}, "logo": {"url": ...} | null}}; trong request mỗi ảnh đầu vào
+# là một khoá camelCase theo trường của creative (productImage, outfitImage, ...), kèm prompt, aspectRatio, modelDisplayName.
 MOCK_JOB = {
     "id": 0,
     "request": {
@@ -502,6 +512,40 @@ def remove_files(*paths):
                 log(f"Không xoá được file tạm {path}: {e}")
 
 
+def add_logo(job, image_path):
+    """
+    Chèn logo shop của job (ảnh đại diện shop, link ký số: tải ngay) vào ảnh kết quả trước khi gửi.
+    Job không có logo -> giữ nguyên ảnh. Trả về đường dẫn ảnh để gửi (apply_logo lưu JPG nên đổi đuôi nếu cần).
+    """
+    logo = job.get("logo")
+    if not logo:
+        return image_path
+
+    log("Bước 6: CHÈN LOGO SHOP")
+    logo_path = os.path.join(OUTPUT_DIR, f"logo_job_{job['id']}")
+    try:
+        try:
+            response = requests.get(logo["url"], timeout=HTTP_TIMEOUT)
+            response.raise_for_status()
+            with open(logo_path, "wb") as f:
+                f.write(response.content)
+        except Exception as e:
+            raise JobError("LOGO_FAILED", f"Không tải được logo shop: {e}")
+        try:
+            apply_logo(image_path, {**LOGO_LAYOUT, "path": logo_path})
+        except MediaJobError as e:
+            raise JobError(e.code, str(e))
+    finally:
+        remove_files(logo_path)
+
+    root, ext = os.path.splitext(image_path)
+    if ext.lower() not in (".jpg", ".jpeg"):
+        os.replace(image_path, root + ".jpg")
+        image_path = root + ".jpg"
+    log("ĐÃ CHÈN LOGO SHOP")
+    return image_path
+
+
 def process_job(driver, wait, session, job):
     """Xử lý 1 job. Trả về True nếu đã đóng Chrome (tải ảnh quá hạn) để lần sau mở lại."""
     job_id = job["id"]
@@ -516,6 +560,7 @@ def process_job(driver, wait, session, job):
         log(f"Request: {json.dumps(request, ensure_ascii=False)[:500]}")
 
         output_path = run_flow(driver, wait, request)
+        output_path = add_logo(job, output_path)
     except JobError as e:
         log(f"JOB #{job_id} LỖI [{e.code}]: {e}")
         chrome_closed = e.code == "DOWNLOAD_TIMEOUT"

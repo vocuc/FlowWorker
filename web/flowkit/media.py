@@ -5,7 +5,7 @@ import os
 import requests
 from PIL import Image, ImageChops, ImageDraw
 
-from .config import DEFAULT_LOGO_PATH, HTTP_TIMEOUT, JPEG_QUALITY, env_first, log
+from .config import HTTP_TIMEOUT, JPEG_QUALITY, env_first, log
 from .errors import JobError
 
 
@@ -43,7 +43,7 @@ def download_images(job_dir, images):
 # ======================================
 
 def _percent(prefix, key, default):
-    """Giá trị % của logo: {PREFIX}_LOGO_{KEY} (riêng nền tảng) rồi LOGO_{KEY} (chung), không có thì default."""
+    """Giá trị % của logo: {PREFIX}_LOGO_{KEY} (riêng worker) rồi LOGO_{KEY} (chung), không có thì default."""
     names = [f"{prefix}_LOGO_{key}", f"LOGO_{key}"]
     raw = (env_first(names, "") or "").strip()
     if raw == "":
@@ -54,22 +54,13 @@ def _percent(prefix, key, default):
         raise SystemExit(f"Cấu hình {names[0]} / {names[1]}={raw!r} không phải số.")
 
 
-def load_logo_config(prefix):
+def load_logo_layout(prefix):
     """
-    Đọc + kiểm tra cấu hình logo lúc khởi động. prefix: TIKTOK / FACEBOOK / INSTAGRAM.
-    Biến: {PREFIX}_LOGO_PATH (hoặc LOGO_PATH dùng chung), _WIDTH, _HEIGHT, _RADIUS, _X, _Y (% cạnh ngắn của ảnh).
-    Đặt PATH rỗng -> không chèn logo. Trả về None nếu không chèn logo. Sai -> dừng worker.
+    Đọc + kiểm tra vị trí / kích thước logo lúc khởi động (worker tạo ảnh; file logo là ảnh đại diện shop, lấy từ job).
+    Biến: {PREFIX}_LOGO_* (vd IMAGE_LOGO_WIDTH) hoặc LOGO_* dùng chung: WIDTH, HEIGHT, RADIUS, X, Y (% cạnh ngắn
+    của ảnh). Sai -> dừng worker. Khi chèn: apply_logo(ảnh, {**layout, "path": file logo}).
     """
-    path = env_first([f"{prefix}_LOGO_PATH", "LOGO_PATH"])
-    if path is None:
-        path = DEFAULT_LOGO_PATH if os.path.isfile(DEFAULT_LOGO_PATH) else ""
-    path = path.strip()
-    if not path:
-        log(f"Không chèn logo (không có logo/logo.jpg và không đặt {prefix}_LOGO_PATH)")
-        return None
-
     config = {
-        "path": path,
         "width": _percent(prefix, "WIDTH", 7),
         "height": _percent(prefix, "HEIGHT", 7),
         "radius": _percent(prefix, "RADIUS", 50),
@@ -77,8 +68,6 @@ def load_logo_config(prefix):
         "y": _percent(prefix, "Y", 2),
     }
     errors = []
-    if not os.path.isfile(path):
-        errors.append(f"không có file logo {path}")
     if not 0 < config["width"] <= 100:
         errors.append("LOGO_WIDTH phải trong (0, 100]")
     if not 0 < config["height"] <= 100:
@@ -89,16 +78,10 @@ def load_logo_config(prefix):
         errors.append("LOGO_X phải >= 0 và WIDTH + X <= 100")
     if not 0 <= config["y"] < 100 or config["height"] + config["y"] > 100:
         errors.append("LOGO_Y phải >= 0 và HEIGHT + Y <= 100")
-    if not errors:
-        try:
-            with Image.open(path) as logo:
-                logo.verify()
-        except Exception as e:
-            errors.append(f"không đọc được file logo: {e}")
     if errors:
         raise SystemExit("CẤU HÌNH LOGO SAI: " + "; ".join(errors))
 
-    log(f"Logo: {path} | rộng {config['width']}%, cao {config['height']}%, bo góc {config['radius']}%, "
+    log(f"Logo: rộng {config['width']}%, cao {config['height']}%, bo góc {config['radius']}%, "
         f"cách phải {config['x']}%, cách dưới {config['y']}% (theo cạnh ngắn của ảnh, góc dưới bên phải)")
     return config
 

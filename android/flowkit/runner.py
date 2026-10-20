@@ -1,7 +1,7 @@
 """
 Xử lý 1 job đăng bài trên điện thoại (vòng lặp nhận job ở flowkit.phone_runner):
   1. Mở app, kiểm tra đăng nhập + đúng tài khoản.
-  2. Tải ảnh, chèn logo, sửa ảnh theo nền tảng, đăng bài.
+  2. Tải ảnh, sửa ảnh theo nền tảng, đăng bài.
   3. POST /publish-jobs/{id} -> completed (+ post_url) hoặc failed (error_code, error_message).
 Đăng xong thì dọn ảnh trên máy; job lỗi thì giữ nguyên màn hình để xem lại. Job lỗi / quá hạn không được giao lại.
 """
@@ -12,13 +12,12 @@ import time
 
 from .config import BASE_DIR, CLOSE_AFTER_SUCCESS_DELAY, LEASE_SAFETY, LEASE_SECONDS, LOGIN_WAIT_RESERVE, log
 from .errors import JobError
-from .media import apply_logo, download_images, load_logo_config
+from .media import download_images
 
 
 class Runner:
     def __init__(self, publisher):
         self.publisher = publisher
-        self.logo = None
 
     # ---- Một job ----
 
@@ -45,16 +44,10 @@ class Runner:
             log("Bước 2: TẢI ẢNH")
             paths = download_images(job_dir, request.get("images") or [])
 
-            if self.logo:
-                log("Bước 3: CHÈN LOGO SHOP")
-                for path in paths:
-                    apply_logo(path, self.logo)
-                log(f"ĐÃ CHÈN LOGO vào {len(paths)} ảnh")
-            else:
-                log("Bước 3: không cấu hình logo, đăng ảnh gốc")
+            # Logo shop đã được chèn lúc tạo ảnh (worker tạo ảnh), không chèn lại ở đây
             p.prepare_images(paths)
 
-            log(f"Bước 4: ĐĂNG LÊN {p.label.upper()}")
+            log(f"Bước 3: ĐĂNG LÊN {p.label.upper()}")
             return p.publish(driver, request, paths, guard)
         finally:
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -75,7 +68,7 @@ class Runner:
             post_url = self.run_job(driver, job, claimed_at)
             # Đăng xong: dọn phiên ngay (không chờ gửi kết quả, gửi có thể chờ mạng lâu), rồi mới báo kết quả
             self.finish_after_success(driver)
-            log(f"Bước 5: BÁO KẾT QUẢ{f' ({post_url})' if post_url else ''}")
+            log(f"Bước 4: BÁO KẾT QUẢ{f' ({post_url})' if post_url else ''}")
             client.submit_completed(job_id, post_url)
             return True
         except JobError as e:
@@ -138,8 +131,7 @@ class Runner:
 
 
 def make_runner(publisher, runner_class=Runner):
-    """Runner của publisher: đọc cấu hình logo (báo lỗi ngay lúc khởi động nếu sai), tạo thư mục làm việc."""
+    """Runner của publisher, tạo thư mục làm việc."""
     runner = runner_class(publisher)
-    runner.logo = load_logo_config(publisher.prefix)
     os.makedirs(publisher.work_dir, exist_ok=True)
     return runner

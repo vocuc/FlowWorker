@@ -80,5 +80,4 @@ HUMAN_DELAY_MIN = 1          # Mỗi thao tác trên trình duyệt nghỉ ngẫ
 HUMAN_DELAY_MAX = 3          # đến HUMAN_DELAY_MAX giây
 
 JOB_DIR = os.path.join(BASE_DIR, "job")
-DEFAULT_LOGO_PATH = os.path.join(BASE_DIR, "logo", "logo.jpg")
 JPEG_QUALITY = 95

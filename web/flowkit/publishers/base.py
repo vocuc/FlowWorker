@@ -1,6 +1,6 @@
 """
 Publisher: phần riêng của từng nền tảng (đăng nhập, kiểm tra tài khoản, thao tác đăng bài trên web).
-Vòng lặp nhận job / báo kết quả / ảnh / logo dùng chung ở flowkit.runner.
+Vòng lặp nhận job / báo kết quả / ảnh dùng chung ở flowkit.runner.
 
 Cấu hình theo nền tảng (PREFIX = TIKTOK / FACEBOOK / INSTAGRAM), đặt trong .env:
   {PREFIX}_WORKER_TOKEN               token worker (php artisan workers:create {tên}), admin gắn với tài khoản nền tảng
@@ -8,7 +8,6 @@ Cấu hình theo nền tảng (PREFIX = TIKTOK / FACEBOOK / INSTAGRAM), đặt t
   {PREFIX}_CHROME_PROFILE_DIRECTORY   profile con, mặc định Default
   {PREFIX}_CHROME_PORT                cổng remote debugging (mỗi worker một cổng để chạy song song)
   {PREFIX}_AUTO_POST                  1 (mặc định) = bấm nút đăng; 0 = chạy thử: điền xong bài, không bấm, báo lỗi AUTO_POST_DISABLED
-  {PREFIX}_LOGO_*                     logo shop (xem flowkit.media.load_logo_config)
 """
 
 import os

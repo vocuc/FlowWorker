@@ -88,5 +88,4 @@ def human_delay():
 
 
 JOB_DIR = os.path.join(BASE_DIR, "job")
-DEFAULT_LOGO_PATH = os.path.join(BASE_DIR, "logo", "logo.jpg")
 JPEG_QUALITY = 95

@@ -1,13 +1,12 @@
 """
 Publisher: phần riêng của từng nền tảng trên điện thoại Android thật (app TikTok / Facebook / Instagram đăng nhập sẵn).
 Phiên làm việc = điện thoại (flowkit.device), dùng chung cho mọi nền tảng của máy đó; không có đăng nhập tay:
-app bị đăng xuất thì job báo {PREFIX}_LOGIN_REQUIRED ngay. Vòng xử lý 1 job (ảnh, logo, báo kết quả) ở flowkit.runner.
+app bị đăng xuất thì job báo {PREFIX}_LOGIN_REQUIRED ngay. Vòng xử lý 1 job (ảnh, báo kết quả) ở flowkit.runner.
 
 Cấu hình theo máy (NAME = PHONE1, PHONE2...) + nền tảng (PREFIX = TIKTOK / FACEBOOK / INSTAGRAM), trong .env:
   {NAME}_{PREFIX}_TOKEN       token worker của tài khoản nền tảng đăng nhập trên máy này
   {NAME}_{PREFIX}_AUTO_POST   (hoặc {PREFIX}_AUTO_POST) 1 (mặc định) = bấm nút đăng;
                               0 = chạy thử: điền xong bài, không bấm, báo lỗi AUTO_POST_DISABLED
-  {PREFIX}_LOGO_*             logo shop (xem flowkit.media.load_logo_config)
 """
 
 import os
