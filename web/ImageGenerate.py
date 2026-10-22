@@ -18,6 +18,7 @@ Cấu hình qua biến môi trường:
   AI90_USE_MOCK       mặc định 0 (gọi API thật). Đặt 1 để dùng job giả lập.
   AI90_API_BASE_URL   mặc định https://admin.a51.vn/api/v1
   AI90_WORKER_TOKEN   token tạo bằng: php artisan workers:create {name}   (bắt buộc khi gọi API thật)
+  AI90_CHROME_PROFILE_DIRECTORY   profile con trong thư mục user-data-dir của Chrome (vd Profile2), trống = Default
   IMAGE_LOGO_WIDTH, _HEIGHT, _RADIUS, _X, _Y (hoặc LOGO_* dùng chung)   vị trí / kích thước logo shop,
                       % cạnh ngắn của ảnh (mặc định 7, 7, 50, 2, 2), xem flowkit/media.py load_logo_layout
 
@@ -56,8 +57,8 @@ for stream in (sys.stdout, sys.stderr):
 # ======================================
 # CẤU HÌNH
 # ======================================
-API_BASE_URL = os.environ.get("AI90_API_BASE_URL", "https://admin.a51.vn/api/v1").rstrip("/")
-WORKER_TOKEN = os.environ.get("AI90_WORKER_TOKEN", "cA18Du4HphfWpcCUNbWrnkHbrTyucvcMybCyAAXtMiSAdHUoFbNhG79OUhYOBMkD")
+API_BASE_URL = os.environ.get("AI90_API_BASE_URL", "").rstrip("/")
+WORKER_TOKEN = os.environ.get("AI90_WORKER_TOKEN", "")
 POLL_INTERVAL = 5        # Giây nghỉ khi chưa có job
 IDLE_LOG_INTERVAL = 60   # Khi chưa có job: cứ mỗi bấy nhiêu giây in 1 dòng "vẫn đang chờ"
 API_ERROR_DELAY = 15     # Giây nghỉ khi không gọi được API
@@ -84,10 +85,7 @@ MOCK_JOB = {
     },
 }
 
-FLOW_URL = os.environ.get(
-    "AI90_FLOW_URL",
-    "https://flow.google.com/project/4f671f1c-7c6f-407b-8414-9c23d663e213/tool/8d50eb7d-bf99-4e11-a991-d910f67973eb",
-)
+FLOW_URL = os.environ.get("AI90_FLOW_URL","")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "job", "output")  # Nơi lưu ảnh 2K tải xuống
 LOGIN_TIMEOUT = 600     # Thời gian tối đa (giây) chờ đăng nhập Google lần đầu
@@ -104,7 +102,9 @@ chrome_options.add_argument("--start-maximized")
 # Tạo Profile RIÊNG cho Selenium, KHÔNG dùng Default
 # (Profile này cần đăng nhập sẵn tài khoản Google /u/0)
 chrome_options.add_argument(r"user-data-dir=C:\selenium-profile")
-chrome_options.add_argument("profile-directory=Profile2")
+CHROME_PROFILE_DIRECTORY = os.environ.get("AI90_CHROME_PROFILE_DIRECTORY", "")  # Trống -> Chrome dùng Default
+if CHROME_PROFILE_DIRECTORY:
+    chrome_options.add_argument(f"profile-directory={CHROME_PROFILE_DIRECTORY}")
 
 # Fix DevToolsActivePort
 chrome_options.add_argument("--remote-debugging-port=9222")
