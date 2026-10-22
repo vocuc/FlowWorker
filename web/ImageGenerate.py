@@ -4,6 +4,8 @@ Worker tạo ảnh cho AI90.
 Vòng lặp:
   1. GET  {API_BASE_URL}/jobs        -> nhận 1 job, trường "request" là JSON gửi cho tool Flow
                                         (productImage, outfitImage, prompt, aspectRatio, modelDisplayName).
+                                        Server chỉ giao job do các tài khoản A51 admin gắn với worker này tạo
+                                        (trang admin Worker > Tài khoản nhận job tạo ảnh); chưa gắn tài khoản nào -> luôn 204.
   2. Mở tool trên Google Flow, dán JSON request vào ô nhập, bấm tạo ảnh (btn_image_generate),
      chờ tạo xong rồi tải ảnh 2K về job/output.
   3. Job có "logo" (ảnh đại diện shop, người dùng bật "Chèn logo vào ảnh" khi tạo lô): chèn logo vào góc dưới bên phải
@@ -84,7 +86,7 @@ MOCK_JOB = {
 
 FLOW_URL = os.environ.get(
     "AI90_FLOW_URL",
-    "https://flow.google.com/project/4f671f1c-7c6f-407b-8414-9c23d663e213/tool/f42437b1-13b9-43cf-9d0b-db4b2c3c70e8?fromViewSource=tools",
+    "https://flow.google.com/project/4f671f1c-7c6f-407b-8414-9c23d663e213/tool/8d50eb7d-bf99-4e11-a991-d910f67973eb",
 )
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "job", "output")  # Nơi lưu ảnh 2K tải xuống
@@ -670,7 +672,8 @@ def main():
                 if idle_since is None:
                     idle_since = time.time()
                     next_idle_log = idle_since + IDLE_LOG_INTERVAL
-                    log(f"Chưa có job, kiểm tra lại mỗi {POLL_INTERVAL} giây...")
+                    log(f"Chưa có job, kiểm tra lại mỗi {POLL_INTERVAL} giây... "
+                        "(chỉ nhận job của tài khoản admin gắn với worker ở trang Worker)")
                     # Hết job -> đóng Chrome, lần sau có job sẽ mở lại
                     close_chrome(driver)
                     driver = wait = None
