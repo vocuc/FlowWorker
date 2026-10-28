@@ -246,10 +246,18 @@ def download_first_image_2k_with_retry(driver, wait):
     # Giữ danh sách file từ trước lần thử đầu: nếu lần trước tải xong muộn thì vẫn nhận file đó
     files_before = set(os.listdir(OUTPUT_DIR))
     attempts = DOWNLOAD_RETRIES + 1
-    for attempt in range(1, attempts + 1):
+    data_cleared = False
+    attempt = 1
+    while True:
         try:
             return download_first_image_2k(driver, wait, files_before)
         except JobError as e:
+            if e.code == "FLOW_UPSCALE_BLOCKED" and not data_cleared:
+                # Google gắn cờ dữ liệu của profile -> xoá dữ liệu rồi thử lại 2K 1 lần
+                log(f"TẢI ẢNH 2K LỖI: [{e.code}] {e} -> XOÁ DỮ LIỆU TRÌNH DUYỆT RỒI THỬ LẠI")
+                clear_browser_data(driver)
+                data_cleared = True
+                continue  # Lần thử sau khi xoá dữ liệu không tính vào DOWNLOAD_RETRIES
             if e.code != "DOWNLOAD_TIMEOUT" or attempt == attempts:
                 raise
             log(f"TẢI ẢNH 2K LỖI (lần {attempt}/{attempts}): [{e.code}] {e}")
@@ -264,7 +272,26 @@ def download_first_image_2k_with_retry(driver, wait):
         except Exception:
             pass
         human_delay(2, 4)
-        log(f"THỬ TẢI LẠI ẢNH 2K (lần {attempt + 1}/{attempts})")
+        attempt += 1
+        log(f"THỬ TẢI LẠI ẢNH 2K (lần {attempt}/{attempts})")
+
+
+def clear_browser_data(driver):
+    """
+    Xoá cookie, cache và dữ liệu trang (giống chrome://settings/content/all -> Delete all data) rồi mở lại Flow.
+    Profile đăng nhập vào chính Chrome nên Chrome tự cấp lại phiên Google, không phải đăng nhập lại.
+    """
+    driver.switch_to.default_content()
+    driver.execute_cdp_cmd("Network.clearBrowserCookies", {})
+    driver.execute_cdp_cmd("Network.clearBrowserCache", {})
+    for origin in ("https://flow.google.com", "https://www.google.com", "https://google.com"):
+        driver.execute_cdp_cmd("Storage.clearDataForOrigin", {"origin": origin, "storageTypes": "all"})
+    log("ĐÃ XOÁ DỮ LIỆU TRÌNH DUYỆT, ĐANG MỞ LẠI FLOW")
+    driver.get(FLOW_URL)
+    ensure_logged_in(driver)
+
+
+UPSCALE_BLOCKED_XPATH = "//*[contains(normalize-space(text()), 'Không tăng được độ phân giải')]"
 
 
 def download_first_image_2k(driver, wait, files_before):
@@ -308,6 +335,13 @@ def download_first_image_2k(driver, wait, files_before):
     download_started = False
     while True:
         time.sleep(1)
+        if not download_started and any(e.is_displayed() for e in driver.find_elements(By.XPATH, UPSCALE_BLOCKED_XPATH)):
+            # Flow chặn tăng độ phân giải (PUBLIC_ERROR_UNUSUAL_ACTIVITY) -> báo lỗi ngay, không chờ hết DOWNLOAD_START_TIMEOUT.
+            # Đóng thông báo để job sau không nhận nhầm
+            for button in driver.find_elements(By.XPATH, "//button[normalize-space()='Đóng']"):
+                if button.is_displayed():
+                    driver.execute_script("arguments[0].click();", button)
+            raise JobError("FLOW_UPSCALE_BLOCKED", "Flow báo 'Không tăng được độ phân giải!' (Google chặn tăng lên 2K)")
         new_files = set(os.listdir(OUTPUT_DIR)) - files_before
         done_files = [f for f in new_files if not f.endswith((".crdownload", ".tmp"))]
         if done_files:

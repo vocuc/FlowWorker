@@ -15,8 +15,8 @@ set AI90_API_BASE_URL=https://admin.a51.vn/api/v1
 
 start "WORKER TAO ANH" cmd /k python ImageGenerate.py
 start "WORKER DANG TIKTOK" cmd /k python worker.py tiktok
-start "WORKER DANG FACEBOOK" cmd /k python worker.py facebook
-start "WORKER DANG INSTAGRAM" cmd /k python worker.py instagram
+REM start "WORKER DANG FACEBOOK" cmd /k python worker.py facebook
+REM start "WORKER DANG INSTAGRAM" cmd /k python worker.py instagram
 
 echo Da mo 4 cua so: TAO ANH, DANG TIKTOK, DANG FACEBOOK, DANG INSTAGRAM.
 timeout /t 5 >nul
